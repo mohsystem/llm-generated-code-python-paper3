@@ -1,0 +1,24 @@
+
+def expanded_form(num):
+    if not isinstance(num, int) or num <= 0:
+        raise ValueError("Number must be a positive integer greater than 0")
+    
+    num_str = str(num)
+    result = []
+    length = len(num_str)
+    
+    for i in range(length):
+        digit = num_str[i]
+        if digit != '0':
+            result.append(digit + '0' * (length - i - 1))
+    
+    return ' + '.join(result)
+
+
+if __name__ == "__main__":
+    # Test cases
+    print(expanded_form(12))      # "10 + 2"
+    print(expanded_form(42))      # "40 + 2"
+    print(expanded_form(70304))   # "70000 + 300 + 4"
+    print(expanded_form(9))       # "9"
+    print(expanded_form(100000))  # "100000"

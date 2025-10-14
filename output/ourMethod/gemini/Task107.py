@@ -1,0 +1,1 @@
+# JNDI (Java Naming and Directory Interface) is a Java-specific API and has no direct equivalent in Python.

@@ -1,0 +1,1 @@
+# JNDI is a Java-specific API and not available in Python. No equivalent implementation is provided here.

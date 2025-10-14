@@ -1,0 +1,36 @@
+
+import os
+import secrets
+from pathlib import Path
+from typing import List, Optional
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+from threading import Lock
+
+
+class Task134:
+    MAGIC = b"KEY1"
+    VERSION = 1
+    SALT_SIZE = 16
+    IV_SIZE = 12
+    TAG_SIZE = 16
+    ITERATIONS = 210000
+    KEY_SIZE = 32
+
+    def __init__(self, base_dir: str):
+        if not base_dir:
+            raise ValueError("Base directory cannot be empty")
+        self.base_directory = Path(base_dir).resolve()
+        self.base_directory.mkdir(parents=True, exist_ok=True)
+        self.lock = Lock()
+
+    def _validate_path(self, filename: str) -> Path:
+        if not filename:
+            raise ValueError("Filename cannot be empty")
+        if ".." in filename or "/" in filename or "\\\\" in filename:\n            raise ValueError("Invalid filename")\n        \n        resolved = (self.base_directory / filename).resolve()\n        if not str(resolved).startswith(str(self.base_directory)):\n            raise SecurityError("Path traversal detected")\n        \n        if resolved.is_symlink():\n            raise SecurityError("Symlinks not allowed")\n        \n        return resolved\n\n    def _derive_key(self, passphrase: bytes, salt: bytes) -> bytes:\n        if not passphrase or len(passphrase) == 0:\n            raise ValueError("Passphrase cannot be empty")\n        if not salt or len(salt) != self.SALT_SIZE:\n            raise ValueError("Invalid salt size")\n        \n        kdf = PBKDF2HMAC(\n            algorithm=hashes.SHA256(),\n            length=self.KEY_SIZE,\n            salt=salt,\n            iterations=self.ITERATIONS\n        )\n        return kdf.derive(passphrase)\n\n    def generate_and_store_key(self, key_name: str, passphrase: str) -> None:\n        if not key_name:\n            raise ValueError("Key name cannot be empty")\n        if not passphrase or len(passphrase) < 12:\n            raise ValueError("Passphrase must be at least 12 characters")\n        \n        with self.lock:\n            key_path = self._validate_path(key_name + ".key")\n            \n            key_material = secrets.token_bytes(32)\n            salt = secrets.token_bytes(self.SALT_SIZE)\n            iv = secrets.token_bytes(self.IV_SIZE)\n            \n            passphrase_bytes = passphrase.encode('utf-8')\n            derived_key = self._derive_key(passphrase_bytes, salt)\n            \n            aesgcm = AESGCM(derived_key)\n            ciphertext = aesgcm.encrypt(iv, key_material, None)\n            \n            file_data = (\n                self.MAGIC +\n                bytes([self.VERSION]) +\n                salt +\n                iv +\n                ciphertext\n            )\n            \n            temp_path = self.base_directory / f".tmp_{secrets.token_hex(8)}.key"\n            try:\n                temp_path.write_bytes(file_data)\n                os.sync()\n                temp_path.replace(key_path)\n            finally:\n                if temp_path.exists():\n                    temp_path.unlink()\n\n    def retrieve_key(self, key_name: str, passphrase: str) -> bytes:\n        if not key_name:\n            raise ValueError("Key name cannot be empty")\n        if not passphrase:\n            raise ValueError("Passphrase cannot be empty")\n        \n        with self.lock:\n            key_path = self._validate_path(key_name + ".key")\n            \n            if not key_path.is_file():\n                raise FileNotFoundError("Key file not found or not a regular file")\n            \n            file_data = key_path.read_bytes()\n            \n            min_size = len(self.MAGIC) + 1 + self.SALT_SIZE + self.IV_SIZE + self.TAG_SIZE\n            if len(file_data) < min_size:\n                raise SecurityError("Invalid key file format")\n            \n            offset = 0\n            magic = file_data[offset:offset + len(self.MAGIC)]\n            offset += len(self.MAGIC)\n            \n            if magic != self.MAGIC:\n                raise SecurityError("Invalid magic number")\n            \n            version = file_data[offset]\n            offset += 1\n            \n            if version != self.VERSION:\n                raise SecurityError("Unsupported version")\n            \n            salt = file_data[offset:offset + self.SALT_SIZE]\n            offset += self.SALT_SIZE\n            \n            iv = file_data[offset:offset + self.IV_SIZE]\n            offset += self.IV_SIZE\n            \n            ciphertext = file_data[offset:]\n            \n            passphrase_bytes = passphrase.encode('utf-8')\n            derived_key = self._derive_key(passphrase_bytes, salt)\n            \n            aesgcm = AESGCM(derived_key)\n            key_material = aesgcm.decrypt(iv, ciphertext, None)\n            \n            return key_material\n\n    def delete_key(self, key_name: str) -> bool:\n        if not key_name:\n            raise ValueError("Key name cannot be empty")\n        \n        with self.lock:\n            key_path = self._validate_path(key_name + ".key")\n            try:\n                key_path.unlink()\n                return True\n            except FileNotFoundError:\n                return False\n\n    def list_keys(self) -> List[str]:\n        with self.lock:\n            keys = []\n            for entry in self.base_directory.glob("*.key"):\n                if entry.is_file():\n                    keys.append(entry.stem)\n            return keys\n\n\nclass SecurityError(Exception):\n    pass\n\n\ndef main():\n    import tempfile\n    import shutil\n    \n    temp_dir = tempfile.mkdtemp(prefix="keymanager_")\n    try:\n        key_manager = Task134(temp_dir)\n        \n        print("Test 1: Generate and retrieve key")\n        passphrase1 = "SecurePassphrase123!"\n        key_manager.generate_and_store_key("testkey1", passphrase1)\n        key1 = key_manager.retrieve_key("testkey1", passphrase1)\n        print(f"Key retrieved successfully: {len(key1) == 32}")\n        \n        print("\
+Test 2: List keys")\n        passphrase2 = "AnotherSecure456!"\n        key_manager.generate_and_store_key("testkey2", passphrase2)\n        keys = key_manager.list_keys()\n        print(f"Keys found: {len(keys)}")\n        \n        print("\
+Test 3: Invalid passphrase")\n        wrong_pass = "WrongPassphrase789!"\n        try:\n            key_manager.retrieve_key("testkey1", wrong_pass)\n            print("ERROR: Should have failed")\n        except Exception:\n            print("Correctly rejected wrong passphrase")\n        \n        print("\
+Test 4: Delete key")\n        deleted = key_manager.delete_key("testkey1")\n        print(f"Key deleted: {deleted}")\n        \n        print("\
+Test 5: Path traversal prevention")\n        try:\n            key_manager.generate_and_store_key("../etc/passwd", "test123456789!")\n            print("ERROR: Should have prevented path traversal")\n        except ValueError:\n            print("Path traversal correctly prevented")\n        \n    finally:\n        shutil.rmtree(temp_dir)\n\n\nif __name__ == "__main__":
+    main()
