@@ -45,7 +45,7 @@ def parse_header_list(header_list: Optional[str]) -> Optional[List[str]]:
 
 def safe_json_string(s: str) -> str:
     esc = {
-        '\\': '\\\\',
+        '\\': '\\',
         '"': '\\"',
         '\b': '\\b',
         '\f': '\\f',

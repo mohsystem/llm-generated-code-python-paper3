@@ -96,7 +96,7 @@ class CORSHandler(BaseHTTPRequestHandler):
             return ""
         return (
             input_str
-            .replace("\\", "\\\\")
+            .replace("\\", "\\")
             .replace('"', '\\"')
             .replace("\n", "\\n")
             .replace("\r", "\\r")

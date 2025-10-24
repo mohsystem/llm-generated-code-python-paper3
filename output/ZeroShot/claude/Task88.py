@@ -30,7 +30,7 @@ def generate_random_string(length):
 def convert_to_unicode(input_string):
     unicode_string = ''
     for char in input_string:
-        unicode_string += f'\\\\u{ord(char):04x}'
+        unicode_string += f'\\u{ord(char):04x}'
     return unicode_string
 
 if __name__ == "__main__":

@@ -1,72 +1,112 @@
 import sys
 import re
-import urllib.request
-import urllib.error
-from typing import List
+import requests
+from urllib.parse import urlparse
 
-def extract_page_title(url: str) -> str:
+class TitleExtractionError(Exception):
+    """Custom exception for errors during title extraction."""
+    pass
+
+def get_page_title(url: str) -> str:
     """
-    Fetches content from a URL and extracts the page title.
+    Makes an HTTPS call to a URL, retrieves the content, and extracts the page title.
 
     Args:
-        url: The HTTPS URL to fetch.
+        url: The HTTPS URL of the webpage.
 
     Returns:
-        The page title, or an empty string if not found or an error occurs.
+        The extracted page title as a string.
+
+    Raises:
+        TitleExtractionError: If the URL is invalid, the request fails,
+                              or the title cannot be found.
     """
-    if not isinstance(url, str) or not url.lower().startswith("https://"):
-        return ""
+    # Rule #3: Ensure all input is validated.
+    try:
+        parsed_url = urlparse(url)
+        if not all([parsed_url.scheme, parsed_url.netloc]):
+            raise TitleExtractionError("Invalid URL format provided.")
+        if parsed_url.scheme != "https":
+            raise TitleExtractionError("URL must use the 'https' scheme.")
+    except ValueError:
+        raise TitleExtractionError("Invalid URL format provided.")
 
     try:
+        # Rules #1, #2, #8: Use a trusted library (requests) that handles
+        # SSL/TLS certificate validation, hostname verification, and modern
+        # protocols by default. Set a user-agent as a good practice.
+        # A timeout prevents the program from hanging indefinitely.
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'TitleExtractor/1.0 (Python)'
         }
-        req = urllib.request.Request(url, headers=headers)
+        response = requests.get(url, timeout=10, headers=headers)
+        
+        # Raise an exception for bad status codes (4xx or 5xx).
+        response.raise_for_status()
 
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.getcode() == 200:
-                charset = response.info().get_content_charset() or 'utf-8'
-                # Read only first 8KB to find the title
-                html_bytes = response.read(8192)
-                html_content = html_bytes.decode(charset, errors='ignore')
-                
-                # Use regex to find the title, case-insensitively, and handling newlines.
-                match = re.search(r'<title.*?>(.*?)</title>', html_content, re.IGNORECASE | re.DOTALL)
-                if match:
-                    return match.group(1).strip()
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
-        return ""
-    
-    return ""
-
-def main(args: List[str]) -> None:
-    if len(args) > 1:
-        url = args[1]
-        print(f"Extracting title from URL provided via command line: {url}")
-        title = extract_page_title(url)
-        if title:
-            print(f"Page Title: {title}")
+        # Rule #5: The requests library handles buffer management safely.
+        html_content = response.text
+        
+        # Rule #4, #6: Use a simple, safe regular expression to parse the title.
+        # This avoids complex parsers that might be vulnerable to attacks like XXE.
+        # The regex is designed to be non-greedy and case-insensitive to handle
+        # various HTML formats, and re.DOTALL allows the title to span newlines.
+        match = re.search(r'<title[^>]*>(.*?)</title>', html_content, re.IGNORECASE | re.DOTALL)
+        
+        if match:
+            # The title is in the first captured group.
+            # Strip whitespace from the beginning and end.
+            return match.group(1).strip()
         else:
-            print("Could not extract page title.")
-        print("---")
+            raise TitleExtractionError("Page title not found in the HTML content.")
 
-    print("Running test cases...")
+    except requests.exceptions.RequestException as e:
+        # Rule #12: Catch and handle network-related exceptions appropriately.
+        raise TitleExtractionError(f"HTTP request failed: {e}") from e
+    except Exception as e:
+        # Catch any other unexpected errors during processing.
+        if isinstance(e, TitleExtractionError):
+            raise
+        raise TitleExtractionError(f"An unexpected error occurred: {e}") from e
+
+def run_tests():
+    """Runs a set of 5 test cases."""
+    print("--- Running 5 Test Cases ---")
+    
+    # A list of 5 valid URLs to test the function.
     test_urls = [
+        "https://www.python.org",
         "https://www.google.com",
-        "https://example.com",
-        "https://httpbin.org/html",
-        "invalid-url",
-        "https://thishostshouldnotexist12345.com"
+        "https://github.com",
+        "https://www.djangoproject.com/",
+        "https://www.kernel.org/"
     ]
 
     for i, url in enumerate(test_urls, 1):
-        print(f"Test Case {i}: {url}")
-        title = extract_page_title(url)
-        if title:
-            print(f"  -> Title: {title}")
-        else:
-            print("  -> Could not extract title (as expected for invalid cases).")
+        print(f"\n--- Test Case {i}: {url} ---")
+        try:
+            title = get_page_title(url)
+            print(f"Success! Title: {title}")
+        except TitleExtractionError as e:
+            print(f"Failed! Error: {e}", file=sys.stderr)
 
+def main():
+    """
+    Main function to handle command-line arguments and run test cases.
+    """
+    if len(sys.argv) == 2:
+        # If a URL is provided as a command-line argument, process it.
+        input_url = sys.argv[1]
+        try:
+            title = get_page_title(input_url)
+            print(f"Title: {title}")
+        except TitleExtractionError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # If no URL is provided, show usage and run the built-in test cases.
+        print(f"Usage: python {sys.argv[0]} <https_url>")
+        run_tests()
 
-if __name__ == '__main__':
-    main(sys.argv)
+if __name__ == "__main__":
+    main()

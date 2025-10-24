@@ -66,7 +66,7 @@ def _format_rows(rows: List[List[str]]) -> str:
     for idx, r in enumerate(rows):
         safe_fields = []
         for f in r:
-            safe = f.replace("\\", "\\\\").replace('"', '\\"')
+            safe = f.replace("\\", "\\").replace('"', '\\"')
             safe_fields.append(f'"{safe}"')
         out.append(f"Row {idx}: [" + ", ".join(safe_fields) + "]")
     return "\n".join(out)

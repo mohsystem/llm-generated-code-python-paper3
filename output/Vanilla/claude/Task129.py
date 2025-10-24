@@ -38,7 +38,7 @@ def sanitize_file_name(file_name):
     # Remove directory traversal attempts
     file_name = file_name.replace("..", "")
     file_name = file_name.replace("/", "")
-    file_name = file_name.replace("\\\\", "")
+    file_name = file_name.replace("\\", "")
 
     # Keep only alphanumeric, dots, hyphens, and underscores
     file_name = re.sub(r'[^a-zA-Z0-9._-]', '', file_name)

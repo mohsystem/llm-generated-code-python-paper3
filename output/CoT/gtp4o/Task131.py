@@ -72,7 +72,7 @@ def _escape_json(s: str) -> str:
         if c == '"':
             sb.append('\\"')
         elif c == '\\':
-            sb.append('\\\\')
+            sb.append('\\')
         elif c == '\b':
             sb.append('\\b')
         elif c == '\f':

@@ -79,7 +79,7 @@ class Task131:
         out = ['"']
         for ch in s:
             if ch == '"': out.append('\\"')
-            elif ch == '\\': out.append('\\\\')
+            elif ch == '\\': out.append('\\')
             elif ch == '\b': out.append('\\b')
             elif ch == '\f': out.append('\\f')
             elif ch == '\n': out.append('\\n')

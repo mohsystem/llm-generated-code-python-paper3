@@ -64,7 +64,7 @@ def safe_json(s: Any) -> str:
     if s is None:
         return ""
     t = str(s)
-    return t.replace("\\", "\\\\").replace('"', '\\"')
+    return t.replace("\\", "\\").replace('"', '\\"')
 
 def parse_cookie(cookie_header: str, name: str) -> Optional[str]:
     if not cookie_header:

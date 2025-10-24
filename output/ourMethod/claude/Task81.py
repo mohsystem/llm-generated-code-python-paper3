@@ -1,115 +1,217 @@
 
 import hashlib
-import hmac
+import ssl
+import socket
 from typing import Optional
-from cryptography import x509
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
-from datetime import datetime, timezone
+import sys
 
 
-def verify_certificate_hash(certificate_bytes: bytes, expected_hash_hex: str) -> bool:
-    """\n    Verifies if the certificate hash matches the expected hash using constant-time comparison.\n    \n    Args:\n        certificate_bytes: The certificate bytes to verify\n        expected_hash_hex: The expected SHA-256 hash in hexadecimal format\n        \n    Returns:\n        True if the hash matches, False otherwise\n    """
-    if not certificate_bytes or len(certificate_bytes) == 0:
-        return False
+def get_certificate_from_host(hostname: str, port: int = 443, timeout: int = 10) -> Optional[bytes]:
+    """\n    Retrieves the SSL certificate from a remote host.\n    \n    Args:\n        hostname: The hostname to connect to\n        port: The port to connect on (default 443)\n        timeout: Connection timeout in seconds\n    \n    Returns:\n        The DER-encoded certificate bytes, or None on error\n    """
+    # Input validation: hostname must be non-empty string
+    if not hostname or not isinstance(hostname, str):
+        print("Error: Invalid hostname", file=sys.stderr)
+        return None
     
-    if not expected_hash_hex or len(expected_hash_hex) == 0:
-        return False
+    # Input validation: port must be in valid range
+    if not isinstance(port, int) or port < 1 or port > 65535:
+        print("Error: Invalid port number", file=sys.stderr)
+        return None
     
-    # Validate hex format and length
-    if not all(c in '0123456789abcdefABCDEF' for c in expected_hash_hex):
-        return False
+    # Input validation: timeout must be positive
+    if not isinstance(timeout, int) or timeout < 1:
+        print("Error: Invalid timeout value", file=sys.stderr)
+        return None
     
-    if len(expected_hash_hex) != 64:
-        return False
+    context = None
+    sock = None
+    ssl_sock = None
     
     try:
-        # Parse certificate
-        cert = x509.load_pem_x509_certificate(certificate_bytes, default_backend())
+        # Create SSL context with secure defaults
+        # Enforces TLS 1.2+ and certificate verification to prevent man-in-the-middle attacks
+        context = ssl.create_default_context()
+        context.check_hostname = True  # Ensures hostname matches certificate (CWE-297)
+        context.verify_mode = ssl.CERT_REQUIRED  # Requires valid certificate chain (CWE-295)
         
-        # Check certificate validity period
-        now = datetime.now(timezone.utc)
-        if now < cert.not_valid_before_utc or now > cert.not_valid_after_utc:
+        # Force minimum TLS 1.2 to prevent downgrade attacks (CWE-327)
+        if hasattr(ssl, "TLSVersion"):  # Python 3.10+
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+        else:  # Older Python versions
+            context.options |= getattr(ssl, "OP_NO_SSLv2", 0)
+            context.options |= getattr(ssl, "OP_NO_SSLv3", 0)
+            context.options |= getattr(ssl, "OP_NO_TLSv1", 0)
+            context.options |= getattr(ssl, "OP_NO_TLSv1_1", 0)
+        
+        # Create socket with timeout to prevent hanging connections
+        sock = socket.create_connection((hostname, port), timeout=timeout)
+        
+        # Wrap socket with SSL/TLS
+        ssl_sock = context.wrap_socket(sock, server_hostname=hostname)
+        
+        # Get the certificate in DER format (binary)
+        cert_der = ssl_sock.getpeercert(binary_form=True)
+        
+        if cert_der is None:
+            print("Error: Failed to retrieve certificate", file=sys.stderr)
+            return None
+        
+        return cert_der
+        
+    except ssl.SSLError as e:
+        print(f"SSL Error: {e}", file=sys.stderr)
+        return None
+    except socket.timeout:
+        print("Error: Connection timeout", file=sys.stderr)
+        return None
+    except socket.gaierror:
+        print("Error: Unable to resolve hostname", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return None
+    finally:
+        # Clean up resources in reverse order of creation
+        if ssl_sock:
+            try:
+                ssl_sock.close()
+            except Exception:
+                pass
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def compute_certificate_hash(cert_der: bytes, algorithm: str = "sha256") -> Optional[str]:
+    """\n    Computes the hash of a certificate using a strong cryptographic algorithm.\n    \n    Args:\n        cert_der: The DER-encoded certificate bytes\n        algorithm: Hash algorithm to use (sha256 or sha512)\n    \n    Returns:\n        Hex-encoded hash string, or None on error\n    """
+    # Input validation: certificate data must be non-empty bytes
+    if not cert_der or not isinstance(cert_der, bytes):
+        print("Error: Invalid certificate data", file=sys.stderr)
+        return None
+    
+    # Input validation: only allow secure hash algorithms (prevents CWE-327)
+    # SHA-256 and SHA-512 are cryptographically secure; MD5 and SHA-1 are forbidden
+    allowed_algorithms = {"sha256", "sha512"}
+    if algorithm not in allowed_algorithms:
+        print(f"Error: Unsupported hash algorithm. Use: {allowed_algorithms}", file=sys.stderr)
+        return None
+    
+    try:
+        # Use secure hash algorithm from hashlib
+        if algorithm == "sha256":
+            hash_obj = hashlib.sha256()
+        else:  # sha512
+            hash_obj = hashlib.sha512()
+        
+        hash_obj.update(cert_der)
+        return hash_obj.hexdigest()
+        
+    except Exception as e:
+        print(f"Error computing hash: {e}", file=sys.stderr)
+        return None
+
+
+def verify_certificate_hash(hostname: str, known_hash: str, port: int = 443, 
+                            algorithm: str = "sha256") -> bool:
+    """\n    Verifies that a remote host's SSL certificate matches a known hash.\n    Uses constant-time comparison to prevent timing attacks.\n    \n    Args:\n        hostname: The hostname to verify\n        known_hash: The expected certificate hash (hex string)\n        port: The port to connect on\n        algorithm: Hash algorithm to use\n    \n    Returns:\n        True if certificate matches, False otherwise\n    """
+    # Input validation: hostname must be non-empty string
+    if not hostname or not isinstance(hostname, str):
+        print("Error: Invalid hostname", file=sys.stderr)
+        return False
+    
+    # Input validation: known_hash must be non-empty hex string
+    if not known_hash or not isinstance(known_hash, str):
+        print("Error: Invalid known hash", file=sys.stderr)
+        return False
+    
+    # Validate known_hash is valid hex
+    try:
+        bytes.fromhex(known_hash)
+    except ValueError:
+        print("Error: Known hash must be a valid hex string", file=sys.stderr)
+        return False
+    
+    # Validate expected hash length based on algorithm
+    expected_lengths = {"sha256": 64, "sha512": 128}
+    if len(known_hash) != expected_lengths.get(algorithm, 0):
+        print(f"Error: Hash length mismatch for {algorithm}", file=sys.stderr)
+        return False
+    
+    # Retrieve certificate from remote host
+    cert_der = get_certificate_from_host(hostname, port)
+    if cert_der is None:
+        return False
+    
+    # Compute hash of retrieved certificate
+    computed_hash = compute_certificate_hash(cert_der, algorithm)
+    if computed_hash is None:
+        return False
+    
+    # Use constant-time comparison to prevent timing attacks (security best practice)
+    # This prevents attackers from determining the hash through timing analysis
+    try:
+        # Compare both hashes in constant time using hmac.compare_digest
+        import hmac
+        # Normalize both to lowercase for comparison
+        known_lower = known_hash.lower()
+        computed_lower = computed_hash.lower()
+        
+        if hmac.compare_digest(known_lower, computed_lower):
+            return True
+        else:
+            # Do not reveal which part of the hash mismatched (fail closed)
+            print("Error: Certificate hash does not match known hash", file=sys.stderr)
             return False
-        
-        # Compute SHA-256 hash
-        cert_der = cert.public_bytes(encoding=x509.Encoding.DER)
-        cert_hash = hashlib.sha256(cert_der).digest()
-        
-        # Convert to hex
-        actual_hash_hex = cert_hash.hex()
-        
-        # Constant-time comparison
-        return constant_time_equals(actual_hash_hex.lower(), expected_hash_hex.lower())
-        
-    except Exception:
+            
+    except Exception as e:
+        print(f"Error during hash comparison: {e}", file=sys.stderr)
         return False
-
-
-def constant_time_equals(a: str, b: str) -> bool:
-    """\n    Constant-time string comparison to prevent timing attacks.\n    """
-    if a is None or b is None:
-        return False
-    
-    a_bytes = a.encode('utf-8')
-    b_bytes = b.encode('utf-8')
-    
-    return hmac.compare_digest(a_bytes, b_bytes)
-
-
-def load_certificate_from_file(file_path: str) -> bytes:
-    """\n    Loads a certificate from a file path.\n    """
-    if not file_path or len(file_path) == 0:
-        raise ValueError("File path cannot be empty")
-    
-    import os
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Certificate file not found: {file_path}")
-    
-    if not os.path.isfile(file_path):
-        raise ValueError(f"Path is not a file: {file_path}")
-    
-    file_size = os.path.getsize(file_path)
-    if file_size > 10 * 1024 * 1024:  # 10MB limit
-        raise ValueError("Certificate file too large")
-    
-    with open(file_path, 'rb') as f:
-        return f.read()
 
 
 def main() -> None:
-    # Test case 1: Valid certificate format but non-matching hash
-    print("Test Case 1: Valid certificate with non-matching hash")
-    test_cert1 = b"""-----BEGIN CERTIFICATE-----\nMIICpDCCAYwCCQDU+pQ3ZUD30jANBgkqhkiG9w0BAQsFADAUMRIwEAYDVQQDDAls\nb2NhbGhvc3QwHhcNMjQwMTAxMDAwMDAwWhcNMjUwMTAxMDAwMDAwWjAUMRIwEAYD\nVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7\nVJTUt9Us8cKjMzEfYyjiWA4R4/M2bS1+fWIcPm9z4Hj1C4C1eFpQ2PQmXYLX3z1k\n-----END CERTIFICATE-----"""
+    """\n    Main function with test cases demonstrating certificate hash verification.\n    """
+    print("=== SSL Certificate Hash Verification Tests ===\\n")
     
-    expected_hash1 = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-    result1 = verify_certificate_hash(test_cert1, expected_hash1)
-    print(f"Result: {result1} (Expected: False - invalid cert format)\\n")
+    # Test Case 1: Verify a legitimate certificate (example.com)
+    print("Test 1: Retrieve and hash example.com certificate")
+    try:
+        cert = get_certificate_from_host("example.com", 443)
+        if cert:
+            hash_val = compute_certificate_hash(cert, "sha256")
+            if hash_val:
+                print(f"Success: SHA-256 hash = {hash_val}\\n")
+            else:
+                print("Failed: Could not compute hash\\n")
+        else:
+            print("Failed: Could not retrieve certificate\\n")
+    except Exception as e:
+        print(f"Test 1 exception: {e}\\n")
     
-    # Test case 2: Invalid hex format
-    print("Test Case 2: Invalid hex format in expected hash")
-    cert_bytes2 = b"test"
-    invalid_hash = "ZZZZZZ"
-    result2 = verify_certificate_hash(cert_bytes2, invalid_hash)
-    print(f"Result: {result2} (Expected: False - invalid hex)\\n")
+    # Test Case 2: Verify with incorrect hash (should fail)
+    print("Test 2: Verify example.com with incorrect hash (should fail)")
+    incorrect_hash = "0" * 64  # Invalid hash
+    result = verify_certificate_hash("example.com", incorrect_hash, 443, "sha256")
+    print(f"Result: {'PASS - Correctly rejected' if not result else 'FAIL - Incorrectly accepted'}\\n")
     
-    # Test case 3: Empty certificate
-    print("Test Case 3: Empty certificate bytes")
-    result3 = verify_certificate_hash(b"", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
-    print(f"Result: {result3} (Expected: False - empty input)\\n")
+    # Test Case 3: Invalid hostname
+    print("Test 3: Invalid hostname (should fail gracefully)")
+    result = verify_certificate_hash("", "0" * 64, 443, "sha256")
+    print(f"Result: {'PASS - Handled error' if not result else 'FAIL'}\\n")
     
-    # Test case 4: None expected hash
-    print("Test Case 4: None expected hash")
-    cert_bytes4 = b"test"
-    result4 = verify_certificate_hash(cert_bytes4, None)
-    print(f"Result: {result4} (Expected: False - None hash)\\n")
+    # Test Case 4: Invalid port
+    print("Test 4: Invalid port number (should fail)")
+    cert = get_certificate_from_host("example.com", 99999)
+    print(f"Result: {'PASS - Handled error' if cert is None else 'FAIL'}\\n")
     
-    # Test case 5: Hash with wrong length
-    print("Test Case 5: Hash with incorrect length")
-    cert_bytes5 = b"test"
-    short_hash = "abcdef"
-    result5 = verify_certificate_hash(cert_bytes5, short_hash)
-    print(f"Result: {result5} (Expected: False - wrong length)\\n")
+    # Test Case 5: Invalid hash algorithm
+    print("Test 5: Unsupported hash algorithm (should fail)")
+    test_data = b"test certificate data"
+    hash_result = compute_certificate_hash(test_data, "md5")  # MD5 is forbidden
+    print(f"Result: {'PASS - Rejected insecure algorithm' if hash_result is None else 'FAIL'}\\n")
+    
+    print("=== All tests completed ===")
 
 
 if __name__ == "__main__":

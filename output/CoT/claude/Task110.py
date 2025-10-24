@@ -42,7 +42,7 @@ class Task110:
                 return False
             
             path = parsed.path
-            if path and ('..' in path or '//' in path or '\\\\' in path):
+            if path and ('..' in path or '//' in path or '\\' in path):
                 return False
             if parsed.username or parsed.password:
                 return False

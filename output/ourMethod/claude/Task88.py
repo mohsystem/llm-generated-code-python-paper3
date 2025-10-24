@@ -16,7 +16,7 @@ def create_random_string(length: int) -> str:
 def convert_to_unicode(input_str: str) -> str:
     if input_str is None:
         raise ValueError("Input string cannot be None")
-    return ''.join(f'\\\\u{ord(c):04x}' for c in input_str)
+    return ''.join(f'\\u{ord(c):04x}' for c in input_str)
 
 def create_temp_file_with_unicode() -> str:
     random_string: str = create_random_string(RANDOM_STRING_LENGTH)

@@ -1,88 +1,113 @@
-import socket
-import ipaddress
-import re
-from urllib.parse import urlparse
 import requests
+from urllib.parse import urlparse
+import sys
 
-# A regex to validate that the URL starts with http:// or https://
-URL_SCHEME_PATTERN = re.compile(r'^https?://', re.IGNORECASE)
-
+# Define constants for security and resource management
+MAX_RESPONSE_SIZE = 1024 * 1024  # 1 MB
 REQUEST_TIMEOUT = 5  # 5 seconds
 
-def is_private_ip(hostname: str) -> bool:
+def is_valid_url(url: str) -> bool:
     """
-    Checks if a hostname resolves to a private, loopback, or link-local IP address.
+    Validates if a URL has a valid format and an allowed scheme (http/https).
+
+    Args:
+        url: The URL string to validate.
+
+    Returns:
+        True if the URL is valid, False otherwise.
     """
+    if not isinstance(url, str):
+        return False
     try:
-        # getaddrinfo can return multiple addresses, check all of them
-        for res in socket.getaddrinfo(hostname, None):
-            _, _, _, _, sockaddr = res
-            ip_str = sockaddr[0]
-            ip = ipaddress.ip_address(ip_str)
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                print(f"Error: Host {hostname} resolves to a private IP address: {ip_str}")
-                return True
-    except socket.gaierror:
-        print(f"Error: Could not resolve host: {hostname}")
-        return True # Fail closed
-    return False
+        # Rule #3: Validate input according to expected formats.
+        # urlparse is a robust way to check URL structure.
+        result = urlparse(url)
+        # We explicitly check for http/https schemes to prevent requests
+        # to local files (file://) or other potentially dangerous schemes.
+        return all([result.scheme in ['http', 'https'], result.netloc])
+    except (ValueError, AttributeError):
+        return False
 
 def make_http_request(url: str) -> str:
     """
-    Makes a safe HTTP GET request to a URL.
-    Validates the URL, protocol, and host to prevent SSRF.
+    Accepts a URL, validates it, and makes a secure HTTP GET request.
+
+    Args:
+        url: The URL to fetch.
+
+    Returns:
+        The response body as a string on success, or an error message on failure.
     """
-    if not isinstance(url, str) or not url.strip():
-        return "Error: URL must be a non-empty string."
-
-    if not URL_SCHEME_PATTERN.match(url):
-        return "Error: Invalid URL format or protocol. Only HTTP/HTTPS is allowed."
+    # Rule #3: Ensure all input is validated before processing.
+    if not is_valid_url(url):
+        return "Error: Invalid URL format or scheme is not http/https."
 
     try:
-        parsed_url = urlparse(url)
-        if not all([parsed_url.scheme, parsed_url.hostname]):
-             return "Error: Malformed URL. Missing scheme or hostname."
-    except ValueError:
-        return "Error: Could not parse URL."
+        # Rule #4: Use potentially dangerous functions with caution.
+        # We use a context manager for the request object.
+        # Rules #1, #2: requests handles SSL/TLS cert and hostname validation by default.
+        with requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,      # Prevents hanging (CWE-400)
+            allow_redirects=False,    # Mitigates some SSRF risks
+            stream=True               # Allows controlling memory usage (CWE-400)
+        ) as response:
+            # Check for HTTP client/server errors (4xx or 5xx status codes)
+            response.raise_for_status()
 
-    if parsed_url.scheme not in ['http', 'https']:
-        return "Error: Invalid protocol. Only HTTP and HTTPS are allowed."
+            # Rule #5: Prevent excessive memory usage by checking Content-Length first.
+            content_length_str = response.headers.get('Content-Length')
+            if content_length_str and int(content_length_str) > MAX_RESPONSE_SIZE:
+                return f"Error: Response size exceeds the limit of {MAX_RESPONSE_SIZE} bytes."
 
-    if is_private_ip(parsed_url.hostname):
-        return "Error: SSRF attempt detected. Requests to private networks are not allowed."
+            # Rule #5: Read the response in chunks to adhere to buffer boundaries.
+            content = b''
+            for chunk in response.iter_content(chunk_size=8192):
+                if len(content) + len(chunk) > MAX_RESPONSE_SIZE:
+                    return f"Error: Response size exceeds the limit of {MAX_RESPONSE_SIZE} bytes."
+                content += chunk
 
-    try:
-        # The 'requests' library handles certificate validation by default
-        with requests.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True) as response:
-            response.raise_for_status() # Raises an HTTPError for bad responses (4xx or 5xx)
-            # Return the first 1KB of content to prevent DoS from large responses
-            return response.text[:1024]
+            # Decode using the encoding specified in headers, with a safe fallback.
+            encoding = response.encoding or 'utf-8'
+            return content.decode(encoding, errors='replace')
 
+    except requests.exceptions.Timeout:
+        return f"Error: Request timed out after {REQUEST_TIMEOUT} seconds."
+    except requests.exceptions.SSLError as e:
+        return f"Error: SSL certificate verification failed: {e}"
     except requests.exceptions.RequestException as e:
-        return f"Error: HTTP request failed: {e}"
+        return f"Error: An HTTP request error occurred: {e}"
     except Exception as e:
         return f"An unexpected error occurred: {e}"
 
 def main():
-    """Main function with test cases."""
-    test_urls = [
-        "https://api.github.com",  # Valid HTTPS
-        "http://example.com",      # Valid HTTP
-        "ftp://example.com",       # Invalid protocol
-        "https://127.0.0.1",       # SSRF attempt (loopback)
-        "https://localhost",       # SSRF attempt (loopback)
-        "http://192.168.1.1",    # SSRF attempt (private)
-        "not-a-url"                # Invalid format
+    """
+    Main function to run test cases for the HTTP request function.
+    """
+    test_cases = [
+        "https://www.example.com",
+        "http://httpbin.org/get",
+        "not-a-valid-url",
+        "ftp://ftp.example.org",
+        "https://this-domain-likely-does-not-exist-asdfghjkl.com"
     ]
 
-    for i, url in enumerate(test_urls):
-        print(f"---- Test Case {i + 1}: {url} ----")
-        response = make_http_request(url)
-        if len(response) > 300:
-            print(response[:300] + "...")
+    print("--- Running Test Cases ---")
+    for i, url in enumerate(test_cases, 1):
+        print(f"\n--- Test Case {i}: Requesting URL: {url} ---")
+        result = make_http_request(url)
+        
+        # To keep output clean, truncate long successful responses.
+        if not result.startswith("Error:"):
+            print(f"Response (first 200 chars):\n{result[:200]}...")
         else:
-            print(response)
-        print("-------------------------------------------\n")
+            print(result)
 
 if __name__ == "__main__":
-    main()
+    # Example of how to take a URL from a user (command-line argument)
+    if len(sys.argv) > 1:
+        user_url = sys.argv[1]
+        print(f"\n--- Running with user-provided URL: {user_url} ---")
+        print(make_http_request(user_url))
+    else:
+        main()

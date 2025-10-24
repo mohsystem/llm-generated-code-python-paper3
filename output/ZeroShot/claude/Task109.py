@@ -12,7 +12,7 @@ def validate_phone(phone):
     """Validate phone number (US format)"""
     if not phone:
         return False
-    phone_regex = r'^(\\+1)?[-.\\\\s]?\\(?([0-9]{3})\\)?[-.\\\\s]?([0-9]{3})[-.\\\\s]?([0-9]{4})$'
+    phone_regex = r'^(\\+1)?[-.\\s]?\\(?([0-9]{3})\\)?[-.\\s]?([0-9]{3})[-.\\s]?([0-9]{4})$'
     return bool(re.match(phone_regex, phone))
 
 def validate_password(password):

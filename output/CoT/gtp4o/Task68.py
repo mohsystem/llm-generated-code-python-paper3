@@ -75,7 +75,7 @@ def search_user(dc_input: str, username: str) -> str:
         dn = entry.entry_dn
         # Build JSON-like string safely
         def esc(s: str) -> str:
-            return s.replace('\\', '\\\\').replace('"', '\\"')
+            return s.replace('\\', '\\').replace('"', '\\"')
         buf = []
         buf.append('{"dn":"')
         buf.append(esc(dn))
@@ -102,7 +102,7 @@ def search_user(dc_input: str, username: str) -> str:
         return "".join(buf)
     except Exception as e:
         msg = f"{e.__class__.__name__}: {str(e) or ''}"
-        msg = msg.replace('\\', '\\\\').replace('"', '\\"')
+        msg = msg.replace('\\', '\\').replace('"', '\\"')
         return f'{{"error":"{msg}"}}'
 
 if __name__ == "__main__":

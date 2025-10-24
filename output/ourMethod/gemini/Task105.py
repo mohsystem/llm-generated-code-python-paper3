@@ -1,88 +1,136 @@
-import socket
 import ssl
-from typing import Tuple
+import socket
+from typing import Optional, Tuple, Any
 
-def establish_secure_connection(host: str, port: int) -> bool:
+def create_secure_context() -> ssl.SSLContext:
     """
-    Establishes a secure SSL/TLS connection to a remote server.
+    Creates and configures a secure SSL context.
+    
+    This context is configured to:
+    - Trust the system's default certificate authorities.
+    - Require and validate server certificates.
+    - Verify that the server's hostname matches its certificate.
+    - Use a minimum of TLS 1.2, disabling older, insecure protocols.
+    """
+    # Use create_default_context() as a secure baseline. It loads default CAs,
+    # enables hostname checking, and sets secure default options.
+    context = ssl.create_default_context()
+
+    # Enforce certificate validation and hostname checking. While these are defaults
+    # in create_default_context(), being explicit makes the security posture clear.
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+
+    # Enforce modern TLS versions, compliant with security best practices.
+    # For Python 3.10 and newer, we can use the TLSVersion enum.
+    if hasattr(ssl, "TLSVersion"):
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+    else:  # For older Python versions, we disable protocols via bitmask options.
+        # This explicitly disables SSLv2, SSLv3, TLSv1.0, and TLSv1.1.
+        context.options |= getattr(ssl, "OP_NO_SSLv2", 0)
+        context.options |= getattr(ssl, "OP_NO_SSLv3", 0)
+        context.options |= getattr(ssl, "OP_NO_TLSv1", 0)
+        context.options |= getattr(ssl, "OP_NO_TLSv1_1", 0)
+    
+    return context
+
+def establish_secure_connection(hostname: str, port: int = 443) -> Optional[Tuple[str, Tuple[Any, ...]]]:
+    """
+    Establishes a secure SSL/TLS connection to a given host and port.
 
     Args:
-        host: The hostname of the server.
-        port: The port number of the server.
+        hostname: The hostname of the server to connect to.
+        port: The port of the server (default is 443 for HTTPS).
 
     Returns:
-        True if the connection was successful and secure, False otherwise.
+        A tuple containing the TLS protocol version and cipher details,
+        or None if the connection failed due to a security or network issue.
     """
-    if not host or not (0 < port < 65536):
-        print(f"Error: Invalid host or port provided.")
-        return False
-        
-    # create_default_context() provides a secure-by-default context:
-    # - It requires certificate validation (verify_mode=CERT_REQUIRED).
-    # - It enables hostname checking (check_hostname=True).
-    # - It loads the system's default trusted CA certificates.
-    context = ssl.create_default_context()
+    if not hostname:
+        print("Error: Hostname cannot be empty.")
+        return None
+
+    context = create_secure_context()
     
     try:
-        # Create a standard TCP socket
-        with socket.create_connection((host, port), timeout=10) as sock:
-            # Wrap the socket with the SSL context
-            # server_hostname is used for hostname checking (SNI)
-            with context.wrap_socket(sock, server_hostname=host) as ssock:
-                print(f"Successfully connected to {host}:{port}")
-                print(f"SSL/TLS Protocol: {ssock.version()}")
-                print(f"Cipher Suite: {ssock.cipher()[0]}")
+        # Create a TCP socket and establish a connection using a context manager.
+        with socket.create_connection((hostname, port), timeout=10) as sock:
+            # Wrap the socket with the secure SSL context. The 'server_hostname'
+            # argument is crucial for SNI and proper hostname verification.
+            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                print(f"Successfully established secure connection to {hostname}:{port}.")
                 
-                # Get peer certificate information
-                cert = ssock.getpeercert()
-                subject = dict(x[0] for x in cert['subject'])
-                print(f"Peer Certificate CN: {subject.get('commonName')}")
+                # Retrieve and return connection details.
+                protocol_version = ssock.version() or "N/A"
+                cipher_info = ssock.cipher()
                 
-                # Example: Send a simple HTTP GET request
-                request = f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-                ssock.sendall(request.encode('utf-8'))
+                if not cipher_info:
+                    cipher_info = ("N/A", "N/A", 0)
+                
+                return protocol_version, cipher_info
 
-                # Read the response
-                response = ssock.recv(4096).decode('utf-8', errors='ignore')
-                print("\n--- Server Response (first few lines) ---")
-                print('\n'.join(response.splitlines()[:5]))
-                print("---------------------------------------\n")
-
-                return True
-                
     except ssl.SSLCertVerificationError as e:
-        print(f"SSL Certificate Verification Error for {host}:{port}: {e}")
-        return False
+        print(f"Connection to {hostname} failed: Certificate verification error. "
+              f"Reason: {e.reason}")
     except ssl.SSLError as e:
-        print(f"SSL Error for {host}:{port}: {e}")
-        return False
-    except socket.gaierror as e:
-        print(f"Hostname Resolution Error for {host}: {e}")
-        return False
+        print(f"Connection to {hostname} failed: An SSL error occurred. "
+              f"Error: {e}")
+    except socket.gaierror:
+        print(f"Connection to {hostname} failed: Hostname could not be resolved.")
     except socket.timeout:
-        print(f"Connection timed out for {host}:{port}")
-        return False
+        print(f"Connection to {hostname} failed: The connection timed out.")
     except ConnectionRefusedError:
-        print(f"Connection refused by {host}:{port}")
-        return False
+        print(f"Connection to {hostname} failed: The server refused the connection.")
     except OSError as e:
-        print(f"OS Error for {host}:{port}: {e}")
-        return False
+        print(f"Connection to {hostname} failed: An OS-level error occurred. "
+              f"Error: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred while connecting to {hostname}: {e}")
 
-def main():
-    test_cases = [
+    return None
+
+def main() -> None:
+    """
+    Main function to run test cases for establishing secure connections.
+    """
+    print("--- Running SSL/TLS Connection Tests ---")
+
+    # Test cases:
+    # 1. A known good, secure site (Google).
+    # 2. Another known good, secure site (Python.org).
+    # 3. A site with an expired certificate (should fail certificate validation).
+    # 4. A site with a self-signed certificate (should fail certificate validation).
+    # 5. A non-existent host (should fail hostname resolution).
+    test_hosts = [
         ("www.google.com", 443),
-        ("www.cloudflare.com", 443),
+        ("www.python.org", 443),
         ("expired.badssl.com", 443),
-        ("wrong.host.badssl.com", 443),
         ("self-signed.badssl.com", 443),
+        ("this-is-not-a-real-domain.invalid", 443),
     ]
 
-    for host, port in test_cases:
-        print(f"--- Testing connection to {host} ---")
-        success = establish_secure_connection(host, port)
-        print(f"Connection status: {'SUCCESS' if success else 'FAILURE'}")
-        print("--------------------------------------\n")
+    for host, port in test_hosts:
+        print("\n" + "=" * 50)
+        print(f"Attempting to connect to: {host}:{port}")
+        print("=" * 50)
+        
+        result = establish_secure_connection(host, port)
+        
+        if result:
+            protocol, cipher_info_tuple = result
+            cipher_name, cipher_protocol, key_bits = cipher_info_tuple
+            print("\n[SUCCESS] Connection established securely.")
+            print(f"  - TLS Protocol Version: {protocol}")
+            print(f"  - Cipher Suite: {cipher_name}")
+            print(f"  - Cipher Protocol: {cipher_protocol}")
+            print(f"  - Key Bits: {key_bits}")
+        else:
+            print("\n[FAILURE] Connection failed or was insecure. "
+                  "This may be expected for certain test cases.")
+        
+        print("=" * 50)
+
+    print("\n--- All tests completed. ---")
 
 
 if __name__ == "__main__":

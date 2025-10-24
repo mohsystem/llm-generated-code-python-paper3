@@ -60,7 +60,7 @@ def has_digit(s: str) -> bool:
 
 def has_special_character(s: str) -> bool:
     """Check if string contains at least one special character."""
-    special_chars = "!@#$%^&*()_+-=[]{}; ':\"|\\\\,.<>/?"
+    special_chars = "!@#$%^&*()_+-=[]{}; ':\"|\\,.<>/?"
     return any(c in special_chars for c in s)
 
 

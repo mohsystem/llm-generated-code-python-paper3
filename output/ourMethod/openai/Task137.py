@@ -26,7 +26,7 @@ def _escape_json(s: str) -> str:
         if ch == '"':
             out.append('\\"')
         elif ch == '\\':
-            out.append('\\\\')
+            out.append('\\')
         elif ch == '\b':
             out.append('\\b')
         elif ch == '\f':

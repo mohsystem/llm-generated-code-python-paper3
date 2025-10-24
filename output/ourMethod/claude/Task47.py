@@ -1,227 +1,326 @@
 
-import re
-import hashlib
+import sys
 import sqlite3
-import time
 import urllib.request
 import urllib.error
 import ssl
-from typing import Optional, List, Tuple
-from dataclasses import dataclass
+import re
+from html.parser import HTMLParser
+from typing import List, Tuple, Optional
 from pathlib import Path
 
-MAX_URL_LENGTH: int = 2048
-MAX_CONTENT_LENGTH: int = 10485760  # 10MB
-CONNECT_TIMEOUT: int = 10
-URL_PATTERN: re.Pattern = re.compile(
-    r'^https://[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}(/[a-zA-Z0-9._~:/?#\\[\\]@!$&\'()*\+,;=-]*)?$'
-)
 
-@dataclass
-class ScrapedData:
-    url: str
-    content: str
-    content_hash: str
-    timestamp: int
+class SecureHTMLParser(HTMLParser):
+    """\n    Secure HTML parser that extracts text content without executing scripts.\n    Validates and sanitizes all extracted data.\n    """
+    def __init__(self):
+        super().__init__()
+        self.data: List[str] = []
+        self.max_data_length = 1000000  # Prevent excessive memory usage
+        self.current_length = 0
+    
+    def handle_data(self, data: str) -> None:
+        """\n        Extract text data with size limits to prevent DoS.\n        """
+        # Validate data is a string
+        if not isinstance(data, str):
+            return
+        
+        # Strip and validate length
+        cleaned = data.strip()
+        if not cleaned:
+            return
+        
+        # Prevent excessive memory usage
+        if self.current_length + len(cleaned) > self.max_data_length:
+            return
+        
+        # Sanitize: remove control characters except whitespace
+        sanitized = re.sub(r'[\\x00-\\x08\\x0B-\\x0C\\x0E-\\x1F\\x7F]', '', cleaned)
+        
+        if sanitized:
+            self.data.append(sanitized)
+            self.current_length += len(sanitized)
 
-def validate_and_normalize_url(url: str) -> str:
-    """Validate and normalize URL ensuring it's HTTPS only."""
-    if not url or not isinstance(url, str):
-        raise ValueError("URL cannot be empty or non-string")
-    
-    trimmed = url.strip()
-    if len(trimmed) > MAX_URL_LENGTH:
-        raise ValueError("URL exceeds maximum length")
-    
-    if not URL_PATTERN.match(trimmed):
-        raise ValueError("Invalid URL format. Only HTTPS URLs are allowed")
-    
-    return trimmed
 
-def scrape_website(url: str) -> str:
-    """Scrape content from a website with security validations."""
-    url = validate_and_normalize_url(url)
+def validate_url(url: str) -> bool:
+    """\n    Validate URL format and ensure it uses HTTPS only.\n    Prevents injection and ensures secure protocol.\n    """
+    if not isinstance(url, str):
+        return False
     
-    # Create SSL context with certificate verification
-    context = ssl.create_default_context()
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.check_hostname = True
-    context.verify_mode = ssl.CERT_REQUIRED
+    # Check length to prevent DoS
+    if len(url) > 2048:
+        return False
     
-    request = urllib.request.Request(
-        url,
-        headers={'User-Agent': 'SecureScraper/1.0'}
+    # Must start with https:// (no http://)
+    if not url.startswith('https://'):
+        return False
+    
+    # Basic format validation using regex
+    url_pattern = re.compile(
+        r'^https://'  # Must start with https://
+        r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)*'  # Domain parts
+        r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'  # Final domain part
+        r'(?::[0-9]{1,5})?'  # Optional port
+        r'(?:/[^\\s]*)?$'  # Optional path
     )
     
+    return bool(url_pattern.match(url))
+
+
+def create_secure_ssl_context() -> ssl.SSLContext:
+    """\n    Create SSL context with secure TLS settings.\n    Enforces certificate validation and modern TLS versions.\n    """
+    # Create default context with certificate verification enabled
+    ctx = ssl.create_default_context()
+    
+    # Enforce certificate validation (CWE-295, CWE-297)
+    ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    
+    # Force TLS 1.2 or higher (CWE-327)
+    if hasattr(ssl, "TLSVersion"):  # Python 3.10+
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    else:  # Older Python versions
+        # Disable insecure protocols
+        ctx.options |= getattr(ssl, "OP_NO_SSLv2", 0)
+        ctx.options |= getattr(ssl, "OP_NO_SSLv3", 0)
+        ctx.options |= getattr(ssl, "OP_NO_TLSv1", 0)
+        ctx.options |= getattr(ssl, "OP_NO_TLSv1_1", 0)
+    
+    return ctx
+
+
+def scrape_website(url: str) -> Optional[List[str]]:
+    """\n    Scrape data from a website using secure HTTPS connection.\n    Validates URL, enforces TLS, and limits response size.\n    """
+    # Validate URL format and protocol (CWE-20)
+    if not validate_url(url):
+        print("Error: Invalid URL. Must be HTTPS and properly formatted.", file=sys.stderr)
+        return None
+    
     try:
-        with urllib.request.urlopen(
-            request,
-            timeout=CONNECT_TIMEOUT,
-            context=context
-        ) as response:
-            
+        # Create secure SSL context (CWE-295, CWE-297, CWE-327)
+        ssl_context = create_secure_ssl_context()
+        
+        # Set timeout to prevent hanging
+        timeout = 30
+        
+        # Set maximum response size to prevent DoS (CWE-400)
+        max_size = 10 * 1024 * 1024  # 10 MB limit
+        
+        # Create request with secure headers
+        req = urllib.request.Request(
+            url,
+            headers={
+                'User-Agent': 'SecureScraper/1.0',
+                'Accept': 'text/html',
+            }
+        )
+        
+        # Open connection with SSL context
+        with urllib.request.urlopen(req, context=ssl_context, timeout=timeout) as response:
+            # Validate response code
             if response.status != 200:
-                raise IOError(f"HTTP error code: {response.status}")
+                print(f"Error: HTTP {response.status}", file=sys.stderr)
+                return None
             
-            content_type = response.headers.get('Content-Type', '')
-            if 'text' not in content_type.lower():
-                raise IOError("Invalid content type")
+            # Read response with size limit (CWE-400)
+            content = response.read(max_size)
             
-            content_length = response.headers.get('Content-Length')
-            if content_length and int(content_length) > MAX_CONTENT_LENGTH:
-                raise IOError("Content exceeds maximum allowed size")
+            # Check if we hit the size limit
+            if len(content) >= max_size:
+                print("Warning: Response truncated at size limit", file=sys.stderr)
             
-            content = b''
-            chunk_size = 8192
-            while True:
-                chunk = response.read(chunk_size)
-                if not chunk:
-                    break
-                content += chunk
-                if len(content) > MAX_CONTENT_LENGTH:
-                    raise IOError("Content exceeds maximum allowed size")
-            
-            return content.decode('utf-8', errors='replace')
-            
+            # Decode with proper encoding
+            html_content = content.decode('utf-8', errors='ignore')
+        
+        # Parse HTML securely (prevents XSS, code injection)
+        parser = SecureHTMLParser()
+        parser.feed(html_content)
+        
+        return parser.data
+    
     except urllib.error.URLError as e:
-        raise IOError(f"Failed to fetch URL: {str(e)}")
+        print(f"Error fetching URL: {e.reason}", file=sys.stderr)
+        return None
+    except urllib.error.HTTPError as e:
+        print(f"HTTP Error: {e.code}", file=sys.stderr)
+        return None
+    except ssl.SSLError as e:
+        print(f"SSL Error: {e}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {type(e).__name__}", file=sys.stderr)
+        return None
+def validate_db_path(db_path: str) -> bool:
+    """
+    Validate database path to prevent path traversal attacks.
+    Ensures path is within expected directory.
+    """
+    if not isinstance(db_path, str):
+        return False
 
-def calculate_hash(content: str) -> str:
-    """Calculate SHA-256 hash of content."""
-    if content is None:
-        raise ValueError("Content cannot be None")
-    
-    hash_obj = hashlib.sha256()
-    hash_obj.update(content.encode('utf-8'))
-    return hash_obj.hexdigest()
+    # Check length
+    if len(db_path) > 255:
+        return False
 
-def initialize_database(db_path: str) -> sqlite3.Connection:
-    """Initialize SQLite database with proper schema."""
-    if not db_path or not isinstance(db_path, str):
-        raise ValueError("Database path cannot be empty or non-string")
-    
-    if not re.match(r'^[a-zA-Z0-9_./:-]+\\.db$', db_path):
-        raise ValueError("Invalid database path format")
-    
-    conn = sqlite3.connect(db_path, isolation_level='DEFERRED')
-    cursor = conn.cursor()
-    
-    cursor.execute('''\n        CREATE TABLE IF NOT EXISTS scraped_data (\n            id INTEGER PRIMARY KEY AUTOINCREMENT,\n            url TEXT NOT NULL,\n            content TEXT NOT NULL,\n            content_hash TEXT NOT NULL,\n            timestamp INTEGER NOT NULL\n        )\n    ''')
-    
-    conn.commit()
-    return conn
+    # Resolve to absolute path
+    try:
+        base_dir = Path.cwd()
+        target_path = (base_dir / db_path).resolve()
 
-def store_data(conn: sqlite3.Connection, data: ScrapedData) -> None:
-    """Store scraped data in database using parameterized queries."""
-    if conn is None or data is None:
-        raise ValueError("Connection and data cannot be None")
-    
-    cursor = conn.cursor()
-    cursor.execute(
-        'INSERT INTO scraped_data (url, content, content_hash, timestamp) VALUES (?, ?, ?, ?)',
-        (data.url, data.content, data.content_hash, data.timestamp)
-    )
-    conn.commit()
+        # Ensure path is within base directory (CWE-22)
+        if not str(target_path).startswith(str(base_dir)):
+            return False
 
-def retrieve_data(conn: sqlite3.Connection, url: Optional[str] = None) -> List[ScrapedData]:
-    """Retrieve scraped data from database."""
-    if conn is None:
-        raise ValueError("Connection cannot be None")
-    
-    cursor = conn.cursor()
-    
-    if url:
-        cursor.execute(
-            'SELECT url, content, content_hash, timestamp FROM scraped_data WHERE url = ? ORDER BY timestamp DESC',
-            (url,)
+        # Ensure it's not a directory
+        if target_path.exists() and target_path.is_dir():
+            return False
+
+        # Ensure parent directory exists
+        if not target_path.parent.exists():
+            return False
+
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def store_in_database(data: List[str], db_path: str, source_url: str) -> bool:
+    """
+    Store scraped data in SQLite database with parameterized queries.
+    Prevents SQL injection and validates all inputs.
+    """
+    # Validate database path (CWE-22)
+    if not validate_db_path(db_path):
+        print("Error: Invalid database path", file=sys.stderr)
+        return False
+
+    # Validate inputs
+    if not isinstance(data, list) or not data:
+        print("Error: Invalid data format", file=sys.stderr)
+        return False
+
+    if not isinstance(source_url, str) or len(source_url) > 2048:
+        print("Error: Invalid source URL", file=sys.stderr)
+        return False
+
+    connection: Optional[sqlite3.Connection] = None
+
+    try:
+        # Connect to database with secure settings
+        connection = sqlite3.connect(
+            db_path,
+            timeout=10.0,
+            isolation_level='DEFERRED'
         )
+
+        cursor = connection.cursor()
+
+        # Create table with proper schema
+        # Using parameterized queries prevents SQL injection (CWE-89)
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS scraped_data (
+                                                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                                        source_url TEXT NOT NULL,
+                                                        content TEXT NOT NULL,
+                                                        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        # Create index for performance
+        cursor.execute(
+            '''
+            CREATE INDEX IF NOT EXISTS idx_source_url
+                ON scraped_data(source_url)
+            '''
+        )
+
+        # Insert data using parameterized queries (CWE-89)
+        for item in data:
+            # Validate each item
+            if not isinstance(item, str):
+                continue
+
+            # Limit item length to prevent excessive storage
+            if len(item) > 50000:
+                item = item[:50000]
+
+            # Use parameterized query to prevent SQL injection
+            cursor.execute(
+                'INSERT INTO scraped_data (source_url, content) VALUES (?, ?)',
+                (source_url, item)
+            )
+
+        # Commit transaction
+        connection.commit()
+
+        print(f"Successfully stored {len(data)} items in database")
+        return True
+
+    except sqlite3.Error as e:
+        print(f"Database error: {type(e).__name__}", file=sys.stderr)
+        if connection:
+            connection.rollback()
+        return False
+    except Exception as e:
+        print(f"Unexpected error: {type(e).__name__}", file=sys.stderr)
+        if connection:
+            connection.rollback()
+        return False
+    finally:
+        # Ensure connection is closed (CWE-404)
+        if connection:
+            connection.close()
+
+
+def main() -> int:
+    """
+    Main function with test cases demonstrating secure web scraping.
+    """
+    print("=== Secure Web Scraper Test Cases ===\n")
+
+    # Test case 1: Valid HTTPS URL (example.com)
+    print("Test 1: Scraping from example.com...")
+    url1 = "https://example.com"
+    data1 = scrape_website(url1)
+    if data1:
+        result1 = store_in_database(data1, "test_data1.db", url1)
+        print(f"Result: {'Success' if result1 else 'Failed'}\n")
     else:
-        cursor.execute(
-            'SELECT url, content, content_hash, timestamp FROM scraped_data ORDER BY timestamp DESC'
-        )
-    
-    results = []
-    for row in cursor.fetchall():
-        results.append(ScrapedData(
-            url=row[0],
-            content=row[1],
-            content_hash=row[2],
-            timestamp=row[3]
-        ))
-    
-    return results
+        print("Result: Failed to scrape\n")
 
-def main() -> None:
-    """Main function with test cases."""
-    print("=== Web Scraper with Local Database - Test Cases ===\\n")
-    
-    # Test Case 1: Initialize database
-    print("Test 1: Initialize database")
-    conn = None
-    try:
-        conn = initialize_database("test_scraper.db")
-        print("✓ Database initialized successfully\\n")
-    except Exception as e:
-        print(f"✗ Error: {str(e)}\\n")
-    
-    # Test Case 2: Validate URL - valid HTTPS
-    print("Test 2: Validate valid HTTPS URL")
-    try:
-        valid_url = "https://example.com/page"
-        normalized = validate_and_normalize_url(valid_url)
-        print(f"✓ Valid URL accepted: {normalized}\\n")
-    except Exception as e:
-        print(f"✗ Error: {str(e)}\\n")
-    
-    # Test Case 3: Validate URL - reject HTTP
-    print("Test 3: Reject insecure HTTP URL")
-    try:
-        insecure_url = "http://example.com/page"
-        validate_and_normalize_url(insecure_url)
-        print("✗ Should have rejected HTTP URL\\n")
-    except ValueError as e:
-        print(f"✓ HTTP URL correctly rejected: {str(e)}\\n")
-    except Exception as e:
-        print(f"✗ Unexpected error: {str(e)}\\n")
-    
-    # Test Case 4: Calculate hash
-    print("Test 4: Calculate content hash")
-    try:
-        content = "Sample content for hashing"
-        content_hash = calculate_hash(content)
-        print(f"✓ Hash calculated: {content_hash}\\n")
-    except Exception as e:
-        print(f"✗ Error: {str(e)}\\n")
-    
-    # Test Case 5: Store and retrieve data
-    print("Test 5: Store and retrieve data")
-    if conn:
-        try:
-            test_url = "https://example.com/test"
-            test_content = "Test content"
-            test_hash = calculate_hash(test_content)
-            timestamp = int(time.time())
-            
-            data = ScrapedData(test_url, test_content, test_hash, timestamp)
-            store_data(conn, data)
-            print("✓ Data stored successfully")
-            
-            retrieved = retrieve_data(conn, test_url)
-            if retrieved and retrieved[0].url == test_url:
-                print(f"✓ Data retrieved successfully: {len(retrieved)} record(s)\\n")
-            else:
-                print("✗ Data retrieval mismatch\\n")
-        except Exception as e:
-            print(f"✗ Error: {str(e)}\\n")
-        finally:
-            if conn:
-                conn.close()
-            try:
-                Path("test_scraper.db").unlink(missing_ok=True)
-            except Exception as e:
-                print(f"Cleanup error: {str(e)}")
-    
-    print("=== All tests completed ===")
+    # Test case 2: Invalid URL - HTTP instead of HTTPS (should fail)
+    print("Test 2: Testing HTTP URL (should reject)...")
+    url2 = "http://example.com"
+    data2 = scrape_website(url2)
+    print(f"Result: {'Rejected' if data2 is None else 'Failed - should reject HTTP'}\n")
+
+    # Test case 3: Invalid URL - malformed (should fail)
+    print("Test 3: Testing malformed URL (should reject)...")
+    url3 = "not-a-valid-url"
+    data3 = scrape_website(url3)
+    print(f"Result: {'Rejected' if data3 is None else 'Failed - should reject malformed'}\n")
+
+    # Test case 4: Path traversal attempt in database path (should fail)
+    print("Test 4: Testing path traversal in DB path (should reject)...")
+    url4 = "https://example.com"
+    data4 = ["test data"]
+    result4 = store_in_database(data4, "../etc/passwd", url4)
+    print(f"Result: {'Rejected' if not result4 else 'Failed - should reject traversal'}\n")
+
+    # Test case 5: Valid scrape and store
+    print("Test 5: Complete scrape and store operation...")
+    url5 = "https://www.ietf.org"
+    data5 = scrape_website(url5)
+    if data5:
+        result5 = store_in_database(data5, "test_data5.db", url5)
+        print(f"Result: {'Success' if result5 else 'Failed'}\n")
+    else:
+        print("Result: Failed to scrape\n")
+
+    print("=== Test Cases Complete ===")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
