@@ -17,18 +17,20 @@ def check_syntax(source_dir, logfile):
                 # log_file = os.path.join(output_path, os.path.splitext(file)[0] + '.log')
 
                 try:
-                    print(f"Checking syntax for {source_file}")
+                    # print(f"Checking syntax for {source_file}")
                     py_compile.compile(source_file, doraise=True)
-                    log_message = f"Syntax check successful: {source_file}\n"
+                    # log_message = f"Syntax check successful: {source_file}\n"
+                    # log_message ="";
                 except py_compile.PyCompileError as e:
                     log_message = f"Syntax check failed for {source_file}:\n{e}\n"
+                    print(log_message)
 
-                with open(logfile, 'a') as log:
-                    log.write(log_message)
+                # with open(logfile, 'a') as log:
+                #     log.write(log_message)
 
-                print(log_message)
+                # print(log_message)
 
 if __name__ == "__main__":
-    source_directory = "output/ourMethod/openai"  # Replace with the path to your source directory
+    source_directory = "output"  # Replace with the path to your source directory
     logfile = "gtp4o_syntax_log.log"
     check_syntax(source_directory, logfile)

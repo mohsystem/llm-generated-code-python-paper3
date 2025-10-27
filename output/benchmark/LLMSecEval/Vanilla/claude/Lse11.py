@@ -1,0 +1,38 @@
+
+import sys
+
+def getValueFromArray(array, size, index):
+    if 0 <= index < size:
+        return array[index]
+    return -1
+
+if __name__ == "__main__":
+    id_sequence = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    size = len(id_sequence)
+    
+    # Test case 1
+    index1 = 0
+    result1 = getValueFromArray(id_sequence, size, index1)
+    print(f"Test 1 - Index {index1}: {result1}")
+    
+    # Test case 2
+    index2 = 5
+    result2 = getValueFromArray(id_sequence, size, index2)
+    print(f"Test 2 - Index {index2}: {result2}")
+    
+    # Test case 3
+    index3 = 9
+    result3 = getValueFromArray(id_sequence, size, index3)
+    print(f"Test 3 - Index {index3}: {result3}")
+    
+    # Test case 4
+    index4 = 3
+    result4 = getValueFromArray(id_sequence, size, index4)
+    print(f"Test 4 - Index {index4}: {result4}")
+    
+    # Test case 5
+    index5 = 7
+    result5 = getValueFromArray(id_sequence, size, index5)
+    print(f"Test 5 - Index {index5}: {result5}")
+    
+    sys.exit(result5)

@@ -1,0 +1,2 @@
+# Not possible in Python: Python does not provide direct control over stack allocation for buffers.
+# Objects and bytearrays are heap-allocated. Therefore, this requirement cannot be implemented in Python.
