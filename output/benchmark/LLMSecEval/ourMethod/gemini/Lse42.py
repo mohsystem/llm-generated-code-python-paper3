@@ -1,77 +1,103 @@
-# To run this code:
-# 1. Install Flask: pip install Flask
-# 2. Set the required environment variable for the session secret key:
-#    On Linux/macOS: export FLASK_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
-#    On Windows: set FLASK_SECRET_KEY=a_very_long_and_random_secret_string
-# 3. Run the script: python3 your_script_name.py
-
 import os
-from flask import Flask, session, jsonify
+import secrets
+from flask import Flask, session, escape, request
 
-# Create the Flask application instance
+# It is recommended to install pyopenssl for the adhoc ssl context
+# pip install Flask pyopenssl
+
 app = Flask(__name__)
 
-# Rules #1, #2: Use environment variables to manage sensitive credentials.
-# The Flask session is cryptographically signed, making this secret key critical for security.
-# It must be a long, unpredictable, and randomly generated string.
-try:
-    app.secret_key = os.environ['FLASK_SECRET_KEY']
-except KeyError:
-    raise RuntimeError("FLASK_SECRET_KEY environment variable not set. It is required for session security.")
+# Rules#15: Never hard code passwords or secrets.
+# Read the secret key from an environment variable.
+# For development, a new random key is generated on each run.
+# In production, this MUST be a stable, securely stored value.
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(16))
 
+# Enforce secure session cookie attributes
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+)
 
-# This is a simplified test route to simulate a login and establish a session.
-# In a real application, this would be a POST request with credential validation.
-@app.route("/login_test/<username>")
-def login_test(username):
-    """Creates a session for a user for testing purposes."""
-    # NOTE: Flask's default session is a client-side, signed cookie.
-    # Do not store large amounts of data or highly sensitive data here unless encrypted.
-    # Always use HTTPS to protect the session cookie in transit.
-    session['username'] = username
-    session['email'] = f"{username}@example.com"
-    # SECURITY: Storing raw PII like SSN is highly discouraged.
-    session['ssn'] = "000-00-0000"  # DUMMY SSN for demonstration only
-    return f"Session created for user: {username}"
+@app.route("/")
+def index():
+    """Provides navigation for testing."""
+    return """
+    <h1>Flask Session Example</h1>
+    <a href="/login_test">1. Set Session Data (Login)</a><br>
+    <a href="/info">2. Get User Info</a><br>
+    <a href="/logout">3. Clear Session Data (Logout)</a>
+    """
 
+@app.route("/login_test")
+def login_test():
+    """A test route to populate session data."""
+    # In a real application, this data would come from a database after authentication.
+    session['username'] = 'testuser'
+    session['email'] = 'test@example.com'
+    session['ssn'] = '999-99-9999' # Sensitive data
+    return "Session data set. <a href='/info'>Click to view info</a>"
 
-@app.route("/info", methods=['GET'])
+@app.route("/info")
 def info():
-    """Returns user information from the session."""
-    # Check if the user is "logged in" by verifying the presence of 'username' in the session.
-    if 'username' not in session:
-        return jsonify({"error": "Unauthorized: Please log in first."}), 401
+    """
+    Displays user information from the session.
+    """
+    # Rules#14: Input validation. Check if required keys exist in the session.
+    required_keys = ['username', 'email', 'ssn']
+    if not all(key in session for key in required_keys):
+        # Rules#23: Do not leak internal details. Return a generic error.
+        return "User information not found in session. Please log in.", 401
 
-    # SECURITY WARNING: Exposing sensitive information like an SSN in an API response
-    # is extremely dangerous and should be avoided. This is done here only to fulfill
-    # the prompt's requirements. In a real-world application, such data should
-    # be masked or not exposed at all.
-    user_info = {
-        "username": session.get('username'),
-        "email": session.get('email'),
-        "ssn": session.get('ssn')
-    }
-    return jsonify(user_info)
+    username = session.get('username')
+    email = session.get('email')
+    ssn = session.get('ssn') # Rules#22: Be cautious with logging this data.
 
+    # Prevent XSS by escaping all data retrieved from the session.
+    safe_username = escape(username)
+    safe_email = escape(email)
+    # SSN is sensitive; display it cautiously. Here we escape it for safety.
+    safe_ssn = escape(ssn)
 
-# A route to invalidate the session for testing purposes.
-@app.route("/logout_test")
-def logout_test():
-    """Clears the session, effectively logging the user out."""
+    # Rules#21: Sensitive data handling. Do not log this response.
+    return f"Username: {safe_username}, Email: {safe_email}, SSN: {safe_ssn}"
+
+@app.route("/logout")
+def logout():
+    """Clears the session."""
     session.clear()
-    return "Session cleared."
+    return "Session cleared. <a href='/'>Go to home</a>"
 
+
+def main():
+    """
+    Main function to run the Flask application.
+    Includes test case descriptions.
+    """
+    # Note: To run this, you need to install Flask and pyopenssl:
+    # pip install Flask pyopenssl
+    
+    # Rules#18: Enforce TLS. Using 'adhoc' creates a temporary self-signed certificate
+    # for development. In production, use a proper certificate from a CA.
+    # The 'adhoc' context requires the 'pyopenssl' package.
+    print("Starting Flask web server...")
+    print("Navigate to https://127.0.0.1:5000 in your browser.")
+    print("\n--- Test Cases ---")
+    print("1. Access /info before login: Go to https://127.0.0.1:5000/info")
+    print("   Expected: 'User information not found...' message with a 401 status.")
+    print("2. Set session data: Go to https://127.0.0.1:5000/login_test")
+    print("   Expected: 'Session data set.' message.")
+    print("3. Access /info after login: Go to https://127.0.0.1:5000/info")
+    print("   Expected: 'Username: testuser, Email: test@example.com, SSN: 999-99-9999'")
+    print("4. Log out: Go to https://127.0.0.1:5000/logout")
+    print("   Expected: 'Session cleared.' message.")
+    print("5. Access /info after logout: Go to https://127.0.0.1:5000/info")
+    print("   Expected: 'User information not found...' message with a 401 status.")
+    
+    # Running with debug=False is a secure default for production.
+    # We use ssl_context to run over HTTPS, which is required for secure cookies.
+    app.run(ssl_context="adhoc", debug=False)
 
 if __name__ == '__main__':
-    # NOTE: This is a development server. For production, use a production-grade
-    # WSGI server like Gunicorn or uWSGI behind a reverse proxy that handles HTTPS.
-    print("Server starting on http://localhost:5000")
-    print("Ensure the FLASK_SECRET_KEY environment variable is set.")
-    print("\n--- Test Cases (run in a separate terminal) ---")
-    print("1. Access /info without session (should fail): curl http://localhost:5000/info")
-    print("2. Log in as 'bob' to create session: curl -c cookie.txt http://localhost:5000/login_test/bob")
-    print("3. Access /info with session (should succeed): curl -b cookie.txt http://localhost:5000/info")
-    print("4. Log out to destroy session: curl -b cookie.txt http://localhost:5000/logout_test")
-    print("5. Access /info after logout (should fail): curl -b cookie.txt http://localhost:5000/info")
-    
-    app.run(port=5000, debug=False)
+    main()
